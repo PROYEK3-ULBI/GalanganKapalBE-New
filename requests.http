@@ -1,0 +1,174 @@
+### SIMS Backend - REST Client requests
+### Install VS Code extension "REST Client" by Huachao Mao to use this file.
+### Click "Send Request" link above each block to execute.
+
+@host = http://localhost:8080
+@adminEmail = admin@shipyard.co.id
+@supervisorEmail = supervisor@shipyard.co.id
+@staffEmail = staff@shipyard.co.id
+@password = admin123
+
+### -----------------------------------------------------------------
+### Health check (public)
+### -----------------------------------------------------------------
+GET {{host}}/healthz
+
+### -----------------------------------------------------------------
+### LOGIN as Admin - the response token is captured into @authToken
+### -----------------------------------------------------------------
+# @name loginAdmin
+POST {{host}}/api/auth/login
+Content-Type: application/json
+
+{
+  "email": "{{adminEmail}}",
+  "password": "{{password}}"
+}
+
+###
+
+@authToken = {{loginAdmin.response.body.token}}
+
+### -----------------------------------------------------------------
+### LOGIN as Supervisor (read-only access to materials)
+### -----------------------------------------------------------------
+# @name loginSupervisor
+POST {{host}}/api/auth/login
+Content-Type: application/json
+
+{
+  "email": "{{supervisorEmail}}",
+  "password": "{{password}}"
+}
+
+###
+
+@supervisorToken = {{loginSupervisor.response.body.token}}
+
+### -----------------------------------------------------------------
+### LOGIN as Staff
+### -----------------------------------------------------------------
+# @name loginStaff
+POST {{host}}/api/auth/login
+Content-Type: application/json
+
+{
+  "email": "{{staffEmail}}",
+  "password": "{{password}}"
+}
+
+###
+
+@staffToken = {{loginStaff.response.body.token}}
+
+### -----------------------------------------------------------------
+### Get current user (any authenticated role)
+### -----------------------------------------------------------------
+GET {{host}}/api/auth/me
+Authorization: Bearer {{authToken}}
+
+### -----------------------------------------------------------------
+### Materials - list all
+### -----------------------------------------------------------------
+GET {{host}}/api/materials
+Authorization: Bearer {{authToken}}
+
+### -----------------------------------------------------------------
+### Materials - filter by category
+### -----------------------------------------------------------------
+GET {{host}}/api/materials?category=Steel Plates
+Authorization: Bearer {{authToken}}
+
+### -----------------------------------------------------------------
+### Materials - HAZMAT only
+### -----------------------------------------------------------------
+GET {{host}}/api/materials?hazmat=true
+Authorization: Bearer {{authToken}}
+
+### -----------------------------------------------------------------
+### Materials - low stock only (stock <= minStock)
+### -----------------------------------------------------------------
+GET {{host}}/api/materials?lowStock=true
+Authorization: Bearer {{authToken}}
+
+### -----------------------------------------------------------------
+### Materials - search by SKU or name
+### -----------------------------------------------------------------
+GET {{host}}/api/materials?search=AH36
+Authorization: Bearer {{authToken}}
+
+### -----------------------------------------------------------------
+### Materials - list distinct categories
+### -----------------------------------------------------------------
+GET {{host}}/api/materials/categories
+Authorization: Bearer {{authToken}}
+
+### -----------------------------------------------------------------
+### Materials - get one by id (replace ID with real one from list)
+### -----------------------------------------------------------------
+@materialId = REPLACE_WITH_REAL_ID
+
+GET {{host}}/api/materials/{{materialId}}
+Authorization: Bearer {{authToken}}
+
+### -----------------------------------------------------------------
+### Materials - create (Admin only)
+### -----------------------------------------------------------------
+# @name createMaterial
+POST {{host}}/api/materials
+Authorization: Bearer {{authToken}}
+Content-Type: application/json
+
+{
+  "sku": "TEST-001",
+  "name": "Test Material",
+  "category": "Steel Plates",
+  "unit": "Sheet",
+  "stock": 100,
+  "minStock": 20,
+  "reorderPoint": 30,
+  "price": 1500000,
+  "hazmat": false,
+  "location": "WH-TEST"
+}
+
+###
+
+@createdId = {{createMaterial.response.body.id}}
+
+### -----------------------------------------------------------------
+### Materials - update (Admin only)
+### -----------------------------------------------------------------
+PUT {{host}}/api/materials/{{createdId}}
+Authorization: Bearer {{authToken}}
+Content-Type: application/json
+
+{
+  "stock": 120,
+  "price": 1600000
+}
+
+### -----------------------------------------------------------------
+### Materials - delete (Admin only)
+### -----------------------------------------------------------------
+DELETE {{host}}/api/materials/{{createdId}}
+Authorization: Bearer {{authToken}}
+
+### -----------------------------------------------------------------
+### RBAC test - Supervisor trying to create (should return 403)
+### -----------------------------------------------------------------
+POST {{host}}/api/materials
+Authorization: Bearer {{supervisorToken}}
+Content-Type: application/json
+
+{
+  "sku": "BAD-001",
+  "name": "Should Fail",
+  "category": "Test",
+  "unit": "Pcs"
+}
+
+### -----------------------------------------------------------------
+### Auth test - request without token (should return 401)
+### -----------------------------------------------------------------
+GET {{host}}/api/materials

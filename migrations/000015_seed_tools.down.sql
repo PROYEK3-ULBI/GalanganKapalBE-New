@@ -1,0 +1,4 @@
+DELETE FROM tools WHERE sku IN (
+    'TL-WLD-500A', 'TL-LSR-PRX', 'TL-HYD-TW1', 'TL-UTG-001',
+    'TL-PLS-120',  'TL-MAG-DP1', 'TL-OXF-SET', 'TL-GEN-10K'
+);
