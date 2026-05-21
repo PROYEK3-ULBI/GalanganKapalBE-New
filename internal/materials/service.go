@@ -20,13 +20,26 @@ func IsValidation(err error) bool {
 	return errors.As(err, &v)
 }
 
+// ActivityLogger is the minimal interface this module needs from activitylog.
+type ActivityLogger interface {
+	LogMaterialCreated(ctx context.Context, actorID, materialID, sku, name string)
+	LogMaterialUpdated(ctx context.Context, actorID, materialID, sku, name string)
+	LogMaterialDeleted(ctx context.Context, actorID, materialID, sku, name string)
+}
+
 // Service contains business logic for materials.
 type Service struct {
-	repo *Repository
+	repo     *Repository
+	activity ActivityLogger // optional
 }
 
 func NewService(repo *Repository) *Service {
 	return &Service{repo: repo}
+}
+
+// SetActivityLogger wires an optional logger for audit trail.
+func (s *Service) SetActivityLogger(l ActivityLogger) {
+	s.activity = l
 }
 
 // List returns materials matching the given filters.
@@ -45,25 +58,51 @@ func (s *Service) Categories(ctx context.Context) ([]string, error) {
 }
 
 // Create validates and inserts a new material.
-func (s *Service) Create(ctx context.Context, req CreateRequest) (*Material, error) {
+func (s *Service) Create(ctx context.Context, req CreateRequest, actorID string) (*Material, error) {
 	m, err := buildFromCreate(req)
 	if err != nil {
 		return nil, err
 	}
-	return s.repo.Create(ctx, m)
+	created, err := s.repo.Create(ctx, m)
+	if err != nil {
+		return nil, err
+	}
+	if s.activity != nil && created != nil {
+		s.activity.LogMaterialCreated(ctx, actorID, created.ID, created.SKU, created.Name)
+	}
+	return created, nil
 }
 
 // Update validates and applies a partial update.
-func (s *Service) Update(ctx context.Context, id string, req UpdateRequest) (*Material, error) {
+func (s *Service) Update(ctx context.Context, id string, req UpdateRequest, actorID string) (*Material, error) {
 	if err := validateUpdate(req); err != nil {
 		return nil, err
 	}
-	return s.repo.Update(ctx, id, req)
+	updated, err := s.repo.Update(ctx, id, req)
+	if err != nil {
+		return nil, err
+	}
+	if s.activity != nil && updated != nil {
+		s.activity.LogMaterialUpdated(ctx, actorID, updated.ID, updated.SKU, updated.Name)
+	}
+	return updated, nil
 }
 
 // Delete removes a material.
-func (s *Service) Delete(ctx context.Context, id string) error {
-	return s.repo.Delete(ctx, id)
+func (s *Service) Delete(ctx context.Context, id, actorID string) error {
+	// Capture identity before deletion for audit trail.
+	var sku, name string
+	if existing, err := s.repo.FindByID(ctx, id); err == nil && existing != nil {
+		sku = existing.SKU
+		name = existing.Name
+	}
+	if err := s.repo.Delete(ctx, id); err != nil {
+		return err
+	}
+	if s.activity != nil {
+		s.activity.LogMaterialDeleted(ctx, actorID, id, sku, name)
+	}
+	return nil
 }
 
 func buildFromCreate(req CreateRequest) (*Material, error) {

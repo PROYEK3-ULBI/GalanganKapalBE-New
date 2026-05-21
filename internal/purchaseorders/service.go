@@ -20,11 +20,24 @@ func IsValidation(err error) bool {
 }
 
 type Service struct {
-	repo *Repository
+	repo     *Repository
+	activity ActivityLogger // optional
+}
+
+// ActivityLogger is the minimal interface this module needs from activitylog.
+type ActivityLogger interface {
+	LogPOCreated(ctx context.Context, actorID, poID, poNumber, vendorName string)
+	LogPOUpdated(ctx context.Context, actorID, poID, poNumber, status string)
+	LogPODeleted(ctx context.Context, actorID, poID, poNumber string)
 }
 
 func NewService(repo *Repository) *Service {
 	return &Service{repo: repo}
+}
+
+// SetActivityLogger wires an optional logger for audit trail.
+func (s *Service) SetActivityLogger(l ActivityLogger) {
+	s.activity = l
 }
 
 func (s *Service) List(ctx context.Context, f ListFilters) ([]PurchaseOrder, error) {
@@ -141,8 +154,24 @@ func (s *Service) Create(ctx context.Context, req CreateRequest, createdByID *st
 	return s.repo.Create(ctx, po, createdByID)
 }
 
+// CreateAndLog wraps Create with audit logging using the actor user ID.
+func (s *Service) CreateAndLog(ctx context.Context, req CreateRequest, createdByID *string) (*PurchaseOrder, error) {
+	created, err := s.Create(ctx, req, createdByID)
+	if err != nil {
+		return nil, err
+	}
+	if s.activity != nil && created != nil {
+		actor := ""
+		if createdByID != nil {
+			actor = *createdByID
+		}
+		s.activity.LogPOCreated(ctx, actor, created.ID, created.PONumber, created.VendorName)
+	}
+	return created, nil
+}
+
 // Update applies partial header updates.
-func (s *Service) Update(ctx context.Context, id string, req UpdateRequest) (*PurchaseOrder, error) {
+func (s *Service) Update(ctx context.Context, id string, req UpdateRequest, actorID string) (*PurchaseOrder, error) {
 	if req.Date != nil {
 		if _, err := time.Parse("2006-01-02", *req.Date); err != nil {
 			return nil, newValidationError("date must be in YYYY-MM-DD format")
@@ -157,9 +186,26 @@ func (s *Service) Update(ctx context.Context, id string, req UpdateRequest) (*Pu
 		trimmed := strings.TrimSpace(*req.Notes)
 		req.Notes = &trimmed
 	}
-	return s.repo.Update(ctx, id, req)
+	updated, err := s.repo.Update(ctx, id, req)
+	if err != nil {
+		return nil, err
+	}
+	if s.activity != nil && updated != nil {
+		s.activity.LogPOUpdated(ctx, actorID, updated.ID, updated.PONumber, updated.Status)
+	}
+	return updated, nil
 }
 
-func (s *Service) Delete(ctx context.Context, id string) error {
-	return s.repo.Delete(ctx, id)
+func (s *Service) Delete(ctx context.Context, id, actorID string) error {
+	var poNumber string
+	if existing, err := s.repo.FindByID(ctx, id); err == nil && existing != nil {
+		poNumber = existing.PONumber
+	}
+	if err := s.repo.Delete(ctx, id); err != nil {
+		return err
+	}
+	if s.activity != nil {
+		s.activity.LogPODeleted(ctx, actorID, id, poNumber)
+	}
+	return nil
 }

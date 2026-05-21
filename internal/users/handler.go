@@ -56,7 +56,8 @@ func (h *Handler) create(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
 	}
-	created, err := h.svc.Create(c.UserContext(), req)
+	actorID, _ := c.Locals(auth.ContextUserIDKey).(string)
+	created, err := h.svc.Create(c.UserContext(), req, actorID)
 	if err != nil {
 		return mapError(err)
 	}
@@ -68,7 +69,8 @@ func (h *Handler) update(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
 	}
-	updated, err := h.svc.Update(c.UserContext(), c.Params("id"), req)
+	actorID, _ := c.Locals(auth.ContextUserIDKey).(string)
+	updated, err := h.svc.Update(c.UserContext(), c.Params("id"), req, actorID)
 	if err != nil {
 		return mapError(err)
 	}
@@ -82,7 +84,8 @@ func (h *Handler) toggleStatus(c *fiber.Ctx) error {
 		Status *string `json:"status"`
 	}
 	_ = c.BodyParser(&req) // body is optional
-	updated, err := h.svc.ToggleStatus(c.UserContext(), c.Params("id"), req.Status)
+	actorID, _ := c.Locals(auth.ContextUserIDKey).(string)
+	updated, err := h.svc.ToggleStatus(c.UserContext(), c.Params("id"), req.Status, actorID)
 	if err != nil {
 		return mapError(err)
 	}
@@ -96,7 +99,8 @@ func (h *Handler) resetPassword(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
 	}
-	if err := h.svc.ResetPassword(c.UserContext(), c.Params("id"), req.Password); err != nil {
+	actorID, _ := c.Locals(auth.ContextUserIDKey).(string)
+	if err := h.svc.ResetPassword(c.UserContext(), c.Params("id"), req.Password, actorID); err != nil {
 		return mapError(err)
 	}
 	return c.SendStatus(fiber.StatusNoContent)
@@ -108,7 +112,7 @@ func (h *Handler) delete(c *fiber.Ctx) error {
 	if currentID == c.Params("id") {
 		return fiber.NewError(fiber.StatusBadRequest, "cannot delete your own account")
 	}
-	if err := h.svc.Delete(c.UserContext(), c.Params("id")); err != nil {
+	if err := h.svc.Delete(c.UserContext(), c.Params("id"), currentID); err != nil {
 		return mapError(err)
 	}
 	return c.SendStatus(fiber.StatusNoContent)

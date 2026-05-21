@@ -21,11 +21,26 @@ func IsValidation(err error) bool {
 }
 
 type Service struct {
-	repo *Repository
+	repo     *Repository
+	activity ActivityLogger // optional
+}
+
+// ActivityLogger is the minimal interface this module needs from activitylog.
+type ActivityLogger interface {
+	LogUserCreated(ctx context.Context, actorID, targetID, email, role string)
+	LogUserUpdated(ctx context.Context, actorID, targetID, email string)
+	LogUserStatusChanged(ctx context.Context, actorID, targetID, email, status string)
+	LogUserPasswordReset(ctx context.Context, actorID, targetID, email string)
+	LogUserDeleted(ctx context.Context, actorID, targetID, email string)
 }
 
 func NewService(repo *Repository) *Service {
 	return &Service{repo: repo}
+}
+
+// SetActivityLogger wires an optional logger for audit trail.
+func (s *Service) SetActivityLogger(l ActivityLogger) {
+	s.activity = l
 }
 
 func (s *Service) List(ctx context.Context, f ListFilters) ([]User, error) {
@@ -37,7 +52,7 @@ func (s *Service) Get(ctx context.Context, id string) (*User, error) {
 }
 
 // Create validates the request, hashes the password, and inserts the new user.
-func (s *Service) Create(ctx context.Context, req CreateRequest) (*User, error) {
+func (s *Service) Create(ctx context.Context, req CreateRequest, actorID string) (*User, error) {
 	email := strings.ToLower(strings.TrimSpace(req.Email))
 	name := strings.TrimSpace(req.Name)
 	role := strings.TrimSpace(req.Role)
@@ -79,10 +94,17 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*User, error) 
 	if err != nil {
 		return nil, fmt.Errorf("hash password: %w", err)
 	}
-	return s.repo.Create(ctx, u, string(hash))
+	created, err := s.repo.Create(ctx, u, string(hash))
+	if err != nil {
+		return nil, err
+	}
+	if s.activity != nil && created != nil {
+		s.activity.LogUserCreated(ctx, actorID, created.ID, created.Email, created.Role)
+	}
+	return created, nil
 }
 
-func (s *Service) Update(ctx context.Context, id string, req UpdateRequest) (*User, error) {
+func (s *Service) Update(ctx context.Context, id string, req UpdateRequest, actorID string) (*User, error) {
 	if req.Name != nil && strings.TrimSpace(*req.Name) == "" {
 		return nil, newValidationError("name cannot be empty")
 	}
@@ -96,12 +118,19 @@ func (s *Service) Update(ctx context.Context, id string, req UpdateRequest) (*Us
 		}
 		req.Status = &st
 	}
-	return s.repo.Update(ctx, id, req)
+	updated, err := s.repo.Update(ctx, id, req)
+	if err != nil {
+		return nil, err
+	}
+	if s.activity != nil && updated != nil {
+		s.activity.LogUserUpdated(ctx, actorID, updated.ID, updated.Email)
+	}
+	return updated, nil
 }
 
 // ToggleStatus flips active <-> inactive when explicit is nil, otherwise sets the
 // status to the requested value (must be 'active' or 'inactive').
-func (s *Service) ToggleStatus(ctx context.Context, id string, explicit *string) (*User, error) {
+func (s *Service) ToggleStatus(ctx context.Context, id string, explicit *string, actorID string) (*User, error) {
 	var target string
 	if explicit != nil {
 		target = strings.ToLower(strings.TrimSpace(*explicit))
@@ -119,11 +148,18 @@ func (s *Service) ToggleStatus(ctx context.Context, id string, explicit *string)
 			target = "active"
 		}
 	}
-	return s.repo.SetStatus(ctx, id, target)
+	updated, err := s.repo.SetStatus(ctx, id, target)
+	if err != nil {
+		return nil, err
+	}
+	if s.activity != nil && updated != nil {
+		s.activity.LogUserStatusChanged(ctx, actorID, updated.ID, updated.Email, target)
+	}
+	return updated, nil
 }
 
 // ResetPassword sets a new password for the user. password must be >=6 chars.
-func (s *Service) ResetPassword(ctx context.Context, id, password string) error {
+func (s *Service) ResetPassword(ctx context.Context, id, password, actorID string) error {
 	if len(password) < 6 {
 		return newValidationError("password must be at least 6 characters")
 	}
@@ -131,9 +167,29 @@ func (s *Service) ResetPassword(ctx context.Context, id, password string) error 
 	if err != nil {
 		return fmt.Errorf("hash password: %w", err)
 	}
-	return s.repo.SetPassword(ctx, id, string(hash))
+	if err := s.repo.SetPassword(ctx, id, string(hash)); err != nil {
+		return err
+	}
+	if s.activity != nil {
+		var email string
+		if existing, err := s.repo.FindByID(ctx, id); err == nil && existing != nil {
+			email = existing.Email
+		}
+		s.activity.LogUserPasswordReset(ctx, actorID, id, email)
+	}
+	return nil
 }
 
-func (s *Service) Delete(ctx context.Context, id string) error {
-	return s.repo.Delete(ctx, id)
+func (s *Service) Delete(ctx context.Context, id, actorID string) error {
+	var email string
+	if existing, err := s.repo.FindByID(ctx, id); err == nil && existing != nil {
+		email = existing.Email
+	}
+	if err := s.repo.Delete(ctx, id); err != nil {
+		return err
+	}
+	if s.activity != nil {
+		s.activity.LogUserDeleted(ctx, actorID, id, email)
+	}
+	return nil
 }

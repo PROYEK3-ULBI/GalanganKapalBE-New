@@ -79,30 +79,35 @@ func New(cfg *config.Config, pool *pgxpool.Pool) *fiber.App {
 	// Wire materials module.
 	matRepo := materials.NewRepository(pool)
 	matSvc := materials.NewService(matRepo)
+	matSvc.SetActivityLogger(activitylog.NewMaterialsAdapter(actSvc))
 	matHandler := materials.NewHandler(matSvc)
 	matHandler.Register(api, authMW, adminMW)
 
 	// Wire vendors module.
 	venRepo := vendors.NewRepository(pool)
 	venSvc := vendors.NewService(venRepo)
+	venSvc.SetActivityLogger(activitylog.NewVendorsAdapter(actSvc))
 	venHandler := vendors.NewHandler(venSvc)
 	venHandler.Register(api, authMW, procurementMW)
 
 	// Wire purchase orders module.
 	poRepo := purchaseorders.NewRepository(pool)
 	poSvc := purchaseorders.NewService(poRepo)
+	poSvc.SetActivityLogger(activitylog.NewPurchaseOrdersAdapter(actSvc))
 	poHandler := purchaseorders.NewHandler(poSvc)
 	poHandler.Register(api, authMW, procurementMW)
 
 	// Wire projects module.
 	projRepo := projects.NewRepository(pool)
 	projSvc := projects.NewService(projRepo)
+	projSvc.SetActivityLogger(activitylog.NewProjectsAdapter(actSvc))
 	projHandler := projects.NewHandler(projSvc)
 	projHandler.Register(api, authMW, procurementMW)
 
 	// Wire transactions module (goods receipt / issue / scrap-return / list).
 	txRepo := transactions.NewRepository(pool)
 	txSvc := transactions.NewService(pool, txRepo)
+	txSvc.SetActivityLogger(activitylog.NewTransactionsAdapter(actSvc))
 	txHandler := transactions.NewHandler(txSvc)
 	txHandler.Register(api, authMW)
 
@@ -125,12 +130,14 @@ func New(cfg *config.Config, pool *pgxpool.Pool) *fiber.App {
 	// Wire users management module (admin only).
 	usrRepo := users.NewRepository(pool)
 	usrSvc := users.NewService(usrRepo)
+	usrSvc.SetActivityLogger(activitylog.NewUsersAdapter(actSvc))
 	usrHandler := users.NewHandler(usrSvc)
 	usrHandler.Register(api, authMW, adminMW)
 
 	// Wire tools module (read+checkout for any user, mutate-catalog for admin).
 	tlRepo := tools.NewRepository(pool)
 	tlSvc := tools.NewService(tlRepo)
+	tlSvc.SetActivityLogger(activitylog.NewToolsAdapter(actSvc))
 	tlHandler := tools.NewHandler(tlSvc)
 	tlHandler.Register(api, authMW, adminMW)
 

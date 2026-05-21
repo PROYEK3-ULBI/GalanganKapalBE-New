@@ -20,11 +20,24 @@ func IsValidation(err error) bool {
 }
 
 type Service struct {
-	repo *Repository
+	repo     *Repository
+	activity ActivityLogger // optional
+}
+
+// ActivityLogger is the minimal interface this module needs from activitylog.
+type ActivityLogger interface {
+	LogProjectCreated(ctx context.Context, actorID, projectID, code, name string)
+	LogProjectUpdated(ctx context.Context, actorID, projectID, code, name string)
+	LogProjectDeleted(ctx context.Context, actorID, projectID, code, name string)
 }
 
 func NewService(repo *Repository) *Service {
 	return &Service{repo: repo}
+}
+
+// SetActivityLogger wires an optional logger for audit trail.
+func (s *Service) SetActivityLogger(l ActivityLogger) {
+	s.activity = l
 }
 
 func (s *Service) List(ctx context.Context, f ListFilters) ([]Project, error) {
@@ -88,10 +101,21 @@ func (s *Service) Create(ctx context.Context, req CreateRequest, createdByID *st
 			p.Notes = &trimmed
 		}
 	}
-	return s.repo.Create(ctx, p, createdByID)
+	created, err := s.repo.Create(ctx, p, createdByID)
+	if err != nil {
+		return nil, err
+	}
+	if s.activity != nil && created != nil {
+		actor := ""
+		if createdByID != nil {
+			actor = *createdByID
+		}
+		s.activity.LogProjectCreated(ctx, actor, created.ID, created.Code, created.Name)
+	}
+	return created, nil
 }
 
-func (s *Service) Update(ctx context.Context, id string, req UpdateRequest) (*Project, error) {
+func (s *Service) Update(ctx context.Context, id string, req UpdateRequest, actorID string) (*Project, error) {
 	if req.Name != nil && strings.TrimSpace(*req.Name) == "" {
 		return nil, newValidationError("name cannot be empty")
 	}
@@ -124,9 +148,27 @@ func (s *Service) Update(ctx context.Context, id string, req UpdateRequest) (*Pr
 		trimmed := strings.TrimSpace(*req.Notes)
 		req.Notes = &trimmed
 	}
-	return s.repo.Update(ctx, id, req)
+	updated, err := s.repo.Update(ctx, id, req)
+	if err != nil {
+		return nil, err
+	}
+	if s.activity != nil && updated != nil {
+		s.activity.LogProjectUpdated(ctx, actorID, updated.ID, updated.Code, updated.Name)
+	}
+	return updated, nil
 }
 
-func (s *Service) Delete(ctx context.Context, id string) error {
-	return s.repo.Delete(ctx, id)
+func (s *Service) Delete(ctx context.Context, id, actorID string) error {
+	var code, name string
+	if existing, err := s.repo.FindByID(ctx, id); err == nil && existing != nil {
+		code = existing.Code
+		name = existing.Name
+	}
+	if err := s.repo.Delete(ctx, id); err != nil {
+		return err
+	}
+	if s.activity != nil {
+		s.activity.LogProjectDeleted(ctx, actorID, id, code, name)
+	}
+	return nil
 }

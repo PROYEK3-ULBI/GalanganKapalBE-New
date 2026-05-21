@@ -75,7 +75,8 @@ func (h *Handler) update(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
 	}
-	updated, err := h.svc.Update(c.UserContext(), c.Params("id"), req)
+	actorID, _ := c.Locals(auth.ContextUserIDKey).(string)
+	updated, err := h.svc.Update(c.UserContext(), c.Params("id"), req, actorID)
 	if err != nil {
 		return mapError(err)
 	}
@@ -83,7 +84,8 @@ func (h *Handler) update(c *fiber.Ctx) error {
 }
 
 func (h *Handler) delete(c *fiber.Ctx) error {
-	if err := h.svc.Delete(c.UserContext(), c.Params("id")); err != nil {
+	actorID, _ := c.Locals(auth.ContextUserIDKey).(string)
+	if err := h.svc.Delete(c.UserContext(), c.Params("id"), actorID); err != nil {
 		return mapError(err)
 	}
 	return c.SendStatus(fiber.StatusNoContent)

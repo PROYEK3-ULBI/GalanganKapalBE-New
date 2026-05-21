@@ -81,18 +81,44 @@ func (r *Repository) Stats(ctx context.Context, userID string) (*Stats, error) {
 	return &s, nil
 }
 
-// Create inserts a new notification.
+// Create inserts a new notification, but only if the recipient hasn't opted
+// out of the notification's category in users.notification_preferences.
+//
+// The opt-in default is TRUE: if the user has never visited Settings or the
+// category is unmapped, the notification is delivered. Only an explicit
+// `false` value in the JSONB blob suppresses delivery.
 func (r *Repository) Create(ctx context.Context, in CreateInput) error {
 	notifType := strings.TrimSpace(in.Type)
 	if notifType == "" {
 		notifType = TypeInfo
 	}
+
+	prefKey := preferenceKey(in.Category)
+	if prefKey == "" {
+		// Category not mapped to a user preference — always deliver.
+		_, err := r.pool.Exec(ctx, `
+			INSERT INTO notifications (user_id, title, message, type, link, category)
+			VALUES ($1, $2, $3, $4, $5, $6)
+		`,
+			in.UserID, in.Title, in.Message, notifType,
+			nullIfEmpty(in.Link), nullIfEmpty(in.Category),
+		)
+		if err != nil {
+			return fmt.Errorf("create notification: %w", err)
+		}
+		return nil
+	}
+
+	// Filter via the users table: only insert if the user opted in (default TRUE).
 	_, err := r.pool.Exec(ctx, `
 		INSERT INTO notifications (user_id, title, message, type, link, category)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		SELECT id, $2, $3, $4, $5, $6
+		FROM users
+		WHERE id = $1
+		  AND COALESCE((notification_preferences->>$7)::boolean, TRUE) = TRUE
 	`,
 		in.UserID, in.Title, in.Message, notifType,
-		nullIfEmpty(in.Link), nullIfEmpty(in.Category),
+		nullIfEmpty(in.Link), nullIfEmpty(in.Category), prefKey,
 	)
 	if err != nil {
 		return fmt.Errorf("create notification: %w", err)
@@ -100,8 +126,9 @@ func (r *Repository) Create(ctx context.Context, in CreateInput) error {
 	return nil
 }
 
-// CreateBulk inserts the same notification for multiple users in one query.
-// Useful for "notify all supervisors" scenarios.
+// CreateBulk inserts the same notification for multiple users in one query,
+// honouring per-user notification preferences. Users who opted out of the
+// notification's category are silently skipped.
 func (r *Repository) CreateBulk(ctx context.Context, userIDs []string, in CreateInput) error {
 	if len(userIDs) == 0 {
 		return nil
@@ -110,12 +137,31 @@ func (r *Repository) CreateBulk(ctx context.Context, userIDs []string, in Create
 	if notifType == "" {
 		notifType = TypeInfo
 	}
+
+	prefKey := preferenceKey(in.Category)
+	if prefKey == "" {
+		_, err := r.pool.Exec(ctx, `
+			INSERT INTO notifications (user_id, title, message, type, link, category)
+			SELECT u, $2, $3, $4, $5, $6 FROM unnest($1::uuid[]) AS u
+		`,
+			userIDs, in.Title, in.Message, notifType,
+			nullIfEmpty(in.Link), nullIfEmpty(in.Category),
+		)
+		if err != nil {
+			return fmt.Errorf("bulk create notification: %w", err)
+		}
+		return nil
+	}
+
 	_, err := r.pool.Exec(ctx, `
 		INSERT INTO notifications (user_id, title, message, type, link, category)
-		SELECT u, $2, $3, $4, $5, $6 FROM unnest($1::uuid[]) AS u
+		SELECT u.id, $2, $3, $4, $5, $6
+		FROM unnest($1::uuid[]) AS ids(id)
+		JOIN users u ON u.id = ids.id
+		WHERE COALESCE((u.notification_preferences->>$7)::boolean, TRUE) = TRUE
 	`,
 		userIDs, in.Title, in.Message, notifType,
-		nullIfEmpty(in.Link), nullIfEmpty(in.Category),
+		nullIfEmpty(in.Link), nullIfEmpty(in.Category), prefKey,
 	)
 	if err != nil {
 		return fmt.Errorf("bulk create notification: %w", err)

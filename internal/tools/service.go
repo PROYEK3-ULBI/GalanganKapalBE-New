@@ -20,11 +20,28 @@ func IsValidation(err error) bool {
 }
 
 type Service struct {
-	repo *Repository
+	repo     *Repository
+	activity ActivityLogger // optional
+}
+
+// ActivityLogger is the minimal interface this module needs from activitylog.
+type ActivityLogger interface {
+	LogToolCreated(ctx context.Context, actorID, toolID, sku, name string)
+	LogToolUpdated(ctx context.Context, actorID, toolID, sku, name string)
+	LogToolDeleted(ctx context.Context, actorID, toolID, sku, name string)
+	LogToolCheckout(ctx context.Context, actorID, toolID, sku, name, borrowerName string)
+	LogToolReturn(ctx context.Context, actorID, toolID, sku, name string)
+	LogToolMaintenance(ctx context.Context, actorID, toolID, sku, name string)
+	LogToolAvailable(ctx context.Context, actorID, toolID, sku, name string)
 }
 
 func NewService(repo *Repository) *Service {
 	return &Service{repo: repo}
+}
+
+// SetActivityLogger wires an optional logger for audit trail.
+func (s *Service) SetActivityLogger(l ActivityLogger) {
+	s.activity = l
 }
 
 func (s *Service) List(ctx context.Context, f ListFilters) ([]Tool, error) {
@@ -39,7 +56,7 @@ func (s *Service) History(ctx context.Context, toolID string) ([]HistoryEntry, e
 	return s.repo.History(ctx, toolID)
 }
 
-func (s *Service) Create(ctx context.Context, req CreateRequest) (*Tool, error) {
+func (s *Service) Create(ctx context.Context, req CreateRequest, actorID string) (*Tool, error) {
 	sku := strings.TrimSpace(req.SKU)
 	name := strings.TrimSpace(req.Name)
 	category := strings.TrimSpace(req.Category)
@@ -104,10 +121,17 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Tool, error) 
 			t.ImageURL = &v
 		}
 	}
-	return s.repo.Create(ctx, t)
+	created, err := s.repo.Create(ctx, t)
+	if err != nil {
+		return nil, err
+	}
+	if s.activity != nil && created != nil {
+		s.activity.LogToolCreated(ctx, actorID, created.ID, created.SKU, created.Name)
+	}
+	return created, nil
 }
 
-func (s *Service) Update(ctx context.Context, id string, req UpdateRequest) (*Tool, error) {
+func (s *Service) Update(ctx context.Context, id string, req UpdateRequest, actorID string) (*Tool, error) {
 	if req.Name != nil && strings.TrimSpace(*req.Name) == "" {
 		return nil, newValidationError("name cannot be empty")
 	}
@@ -122,11 +146,29 @@ func (s *Service) Update(ctx context.Context, id string, req UpdateRequest) (*To
 			return nil, newValidationError("calibrationDue must be YYYY-MM-DD")
 		}
 	}
-	return s.repo.Update(ctx, id, req)
+	updated, err := s.repo.Update(ctx, id, req)
+	if err != nil {
+		return nil, err
+	}
+	if s.activity != nil && updated != nil {
+		s.activity.LogToolUpdated(ctx, actorID, updated.ID, updated.SKU, updated.Name)
+	}
+	return updated, nil
 }
 
-func (s *Service) Delete(ctx context.Context, id string) error {
-	return s.repo.Delete(ctx, id)
+func (s *Service) Delete(ctx context.Context, id, actorID string) error {
+	var sku, name string
+	if existing, err := s.repo.FindByID(ctx, id); err == nil && existing != nil {
+		sku = existing.SKU
+		name = existing.Name
+	}
+	if err := s.repo.Delete(ctx, id); err != nil {
+		return err
+	}
+	if s.activity != nil {
+		s.activity.LogToolDeleted(ctx, actorID, id, sku, name)
+	}
+	return nil
 }
 
 // Checkout assigns the tool to the given borrower (default: actingUserID).
@@ -138,14 +180,36 @@ func (s *Service) Checkout(ctx context.Context, toolID string, actingUserID stri
 	if borrowerID == "" {
 		return nil, newValidationError("borrower is required")
 	}
-	return s.repo.Checkout(ctx, toolID, borrowerID, trimPtr(req.Notes))
+	updated, err := s.repo.Checkout(ctx, toolID, borrowerID, trimPtr(req.Notes))
+	if err != nil {
+		return nil, err
+	}
+	if s.activity != nil && updated != nil {
+		borrowerName := ""
+		if updated.BorrowerName != nil {
+			borrowerName = *updated.BorrowerName
+		}
+		s.activity.LogToolCheckout(ctx, actingUserID, updated.ID, updated.SKU, updated.Name, borrowerName)
+	}
+	return updated, nil
 }
 
 func (s *Service) Return(ctx context.Context, toolID string, actingUserID *string, req ReturnRequest) (*Tool, error) {
 	if req.Condition != nil && *req.Condition != "" && !IsValidCondition(*req.Condition) {
 		return nil, newValidationError("invalid condition")
 	}
-	return s.repo.Return(ctx, toolID, actingUserID, trimPtr(req.Condition), trimPtr(req.Notes))
+	updated, err := s.repo.Return(ctx, toolID, actingUserID, trimPtr(req.Condition), trimPtr(req.Notes))
+	if err != nil {
+		return nil, err
+	}
+	if s.activity != nil && updated != nil {
+		actor := ""
+		if actingUserID != nil {
+			actor = *actingUserID
+		}
+		s.activity.LogToolReturn(ctx, actor, updated.ID, updated.SKU, updated.Name)
+	}
+	return updated, nil
 }
 
 // Maintenance moves a tool to Maintenance status.
@@ -153,12 +217,34 @@ func (s *Service) Maintenance(ctx context.Context, toolID string, actingUserID *
 	if req.Condition != nil && *req.Condition != "" && !IsValidCondition(*req.Condition) {
 		return nil, newValidationError("invalid condition")
 	}
-	return s.repo.SetStatus(ctx, toolID, StatusMaintenance, actingUserID, trimPtr(req.Condition), trimPtr(req.Notes))
+	updated, err := s.repo.SetStatus(ctx, toolID, StatusMaintenance, actingUserID, trimPtr(req.Condition), trimPtr(req.Notes))
+	if err != nil {
+		return nil, err
+	}
+	if s.activity != nil && updated != nil {
+		actor := ""
+		if actingUserID != nil {
+			actor = *actingUserID
+		}
+		s.activity.LogToolMaintenance(ctx, actor, updated.ID, updated.SKU, updated.Name)
+	}
+	return updated, nil
 }
 
 // MakeAvailable moves a tool from Maintenance back to Available.
 func (s *Service) MakeAvailable(ctx context.Context, toolID string, actingUserID *string, notes *string) (*Tool, error) {
-	return s.repo.SetStatus(ctx, toolID, StatusAvailable, actingUserID, nil, trimPtr(notes))
+	updated, err := s.repo.SetStatus(ctx, toolID, StatusAvailable, actingUserID, nil, trimPtr(notes))
+	if err != nil {
+		return nil, err
+	}
+	if s.activity != nil && updated != nil {
+		actor := ""
+		if actingUserID != nil {
+			actor = *actingUserID
+		}
+		s.activity.LogToolAvailable(ctx, actor, updated.ID, updated.SKU, updated.Name)
+	}
+	return updated, nil
 }
 
 func trimPtr(p *string) *string {

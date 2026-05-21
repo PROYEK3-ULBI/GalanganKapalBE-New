@@ -23,12 +23,25 @@ func IsValidation(err error) bool {
 }
 
 type Service struct {
-	pool *pgxpool.Pool
-	repo *Repository
+	pool     *pgxpool.Pool
+	repo     *Repository
+	activity ActivityLogger // optional
+}
+
+// ActivityLogger is the minimal interface this module needs from activitylog.
+type ActivityLogger interface {
+	LogReceipt(ctx context.Context, actorID, txnID, txnNo, sku string, qty int)
+	LogIssue(ctx context.Context, actorID, txnID, txnNo, sku, projectCode string, qty int)
+	LogScrapReturn(ctx context.Context, actorID, txnID, txnNo, txnType, sku string, qty int, reason string)
 }
 
 func NewService(pool *pgxpool.Pool, repo *Repository) *Service {
 	return &Service{pool: pool, repo: repo}
+}
+
+// SetActivityLogger wires an optional logger for audit trail.
+func (s *Service) SetActivityLogger(l ActivityLogger) {
+	s.activity = l
 }
 
 func (s *Service) List(ctx context.Context, f ListFilters) ([]Transaction, error) {
@@ -166,6 +179,16 @@ func (s *Service) Receipt(ctx context.Context, req ReceiptRequest, userID *strin
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit receipt: %w", err)
 	}
+	// Audit trail per item.
+	if s.activity != nil {
+		actor := ""
+		if userID != nil {
+			actor = *userID
+		}
+		for _, t := range out {
+			s.activity.LogReceipt(ctx, actor, t.ID, t.TransactionNo, t.SKU, t.Qty)
+		}
+	}
 	return out, nil
 }
 
@@ -273,6 +296,20 @@ func (s *Service) Issue(ctx context.Context, req IssueRequest, userID *string) (
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit issue: %w", err)
 	}
+	// Audit trail per item.
+	if s.activity != nil {
+		actor := ""
+		if userID != nil {
+			actor = *userID
+		}
+		for _, t := range out {
+			projectCode := ""
+			if t.ProjectCode != nil {
+				projectCode = *t.ProjectCode
+			}
+			s.activity.LogIssue(ctx, actor, t.ID, t.TransactionNo, t.SKU, projectCode, t.Qty)
+		}
+	}
 	return out, nil
 }
 
@@ -363,6 +400,13 @@ func (s *Service) ScrapReturn(ctx context.Context, req ScrapReturnRequest, userI
 
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit scrap/return: %w", err)
+	}
+	if s.activity != nil && row != nil {
+		actor := ""
+		if userID != nil {
+			actor = *userID
+		}
+		s.activity.LogScrapReturn(ctx, actor, row.ID, row.TransactionNo, rt, row.SKU, row.Qty, req.Reason)
 	}
 	return row, nil
 }
